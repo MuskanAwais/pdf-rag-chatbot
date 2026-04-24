@@ -1,7 +1,25 @@
 streamlit
-supabase
-httpx==0.25.2
-mistralai
-langchain
+streamlit
+python-dotenv
+
+# core
 numpy
 pandas
+
+# pdf
+pypdf
+pdfplumber
+
+# embeddings / AI
+sentence-transformers
+mistralai==0.4.2
+
+# supabase stack
+supabase==2.3.4
+postgrest==0.13.2
+gotrue==2.9.1
+
+httpx==0.25.2
+
+# utils
+tqdm
