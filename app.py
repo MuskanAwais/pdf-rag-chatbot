@@ -1,35 +1,36 @@
 import streamlit as st
 import uuid
-import time
 
-st.set_page_config(page_title="RAG ChatGPT Clone", layout="wide")
+st.set_page_config(page_title="RAG PDF Assistant", layout="wide")
 
 # -------------------------
 # CONFIG
 # -------------------------
-MAX_PDF_SIZE_MB = 10
+MAX_PDF_SIZE_MB = 3
 
 # -------------------------
-# SESSION STATE
+# SESSION STATE (ONLY ONCE)
 # -------------------------
 if "device_id" not in st.session_state:
     st.session_state.device_id = str(uuid.uuid4())
 
-if "pdf_id" not in st.session_state:
-    st.session_state.pdf_id = None
-
 if "chats" not in st.session_state:
-    st.session_state.chats = {}   # chat_id -> messages
+    st.session_state.chats = {}
 
 if "current_chat" not in st.session_state:
-    st.session_state.current_chat = str(uuid.uuid4())
+    chat_id = str(uuid.uuid4())
+    st.session_state.current_chat = chat_id
+    st.session_state.chats[chat_id] = {
+        "messages": [],
+        "pdf_id": None
+    }
 
-if st.session_state.current_chat not in st.session_state.chats:
-    st.session_state.chats[st.session_state.current_chat] = []
+if "last_pdf_id" not in st.session_state:
+    st.session_state.last_pdf_id = None
 
 
 # -------------------------
-# IMPORTS
+# IMPORTS (CORE)
 # -------------------------
 from core.pdf_loader import extract_text_from_pdf
 from core.chunker import chunk_text
@@ -39,116 +40,139 @@ from core.chat_engine import ask_question
 
 
 # -------------------------
-# SIDEBAR (ChatGPT style)
+# GET CURRENT CHAT DATA
+# -------------------------
+chat_id = st.session_state.current_chat
+
+if chat_id not in st.session_state.chats:
+    st.session_state.chats[chat_id] = {
+        "messages": [],
+        "pdf_id": None
+    }
+
+chat_data = st.session_state.chats[chat_id]
+messages = chat_data["messages"]
+
+
+# -------------------------
+# SIDEBAR (CHAT LIST + CONTROL)
 # -------------------------
 with st.sidebar:
 
-    st.title("💬 Conversations")
+    st.title("💬 Chats")
 
-    # NEW CHAT BUTTON
+    # NEW CHAT
     if st.button("➕ New Chat"):
         new_chat = str(uuid.uuid4())
         st.session_state.current_chat = new_chat
-        st.session_state.chats[new_chat] = []
+        st.session_state.chats[new_chat] = {
+            "messages": [],
+            "pdf_id": None
+        }
         st.rerun()
 
     st.divider()
 
-    # CHAT LIST
-    for chat_id in list(st.session_state.chats.keys())[::-1]:
-        if st.button(f"🗂 Chat {chat_id[:6]}", key=chat_id):
-            st.session_state.current_chat = chat_id
+    # CHAT HISTORY
+    for cid in list(st.session_state.chats.keys())[::-1]:
+
+        msgs = st.session_state.chats[cid]["messages"]
+        title = msgs[0]["content"] if msgs else "New Chat"
+
+        if st.button(f"🗂 {title[:20]}", key=cid):
+            st.session_state.current_chat = cid
             st.rerun()
 
     st.divider()
 
-    # PDF STATUS
-    if st.session_state.pdf_id:
-        st.success("📄 PDF Loaded")
+    # PDF STATUS (per chat)
+    if chat_data["pdf_id"]:
+        st.success("📄 PDF Loaded for this chat")
     else:
-        st.warning("⚠️ No PDF")
-
+        st.warning("⚠️ No PDF in this chat")
 
 
 # -------------------------
 # TITLE
 # -------------------------
-st.title("📄 RAG ChatGPT Style PDF Assistant")
+st.title("📄 RAG PDF Assistant")
 
 
 # -------------------------
-# PDF UPLOAD
+# PDF SECTION (ONLY CONTROL, NO STOP)
 # -------------------------
-uploaded_file = st.file_uploader("Upload PDF first", type=["pdf"])
+if chat_data["pdf_id"] is None:
 
-if uploaded_file and st.session_state.pdf_id is None:
+    st.info("📌 Upload PDF or use last PDF")
 
-    file_size_mb = uploaded_file.size / (1024 * 1024)
-    st.info(f"📦 File Size: {file_size_mb:.2f} MB")
+    option = st.radio("Choose PDF option:", ["Upload New PDF", "Use Last PDF"])
 
-    if file_size_mb > MAX_PDF_SIZE_MB:
-        st.error("❌ File too large")
-        st.stop()
+    if option == "Upload New PDF":
 
-    status = st.status("🚀 Processing PDF...", expanded=True)
-    progress = st.progress(0)
+        uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
 
-    # STEP 1
-    status.update(label="📄 Reading PDF", state="running")
-    pages = extract_text_from_pdf(uploaded_file)
-    progress.progress(25)
+        if uploaded_file:
 
-    # STEP 2
-    status.update(label="✂️ Chunking text", state="running")
-    chunks = chunk_text(pages)
-    progress.progress(50)
+            file_size_mb = uploaded_file.size / (1024 * 1024)
+            st.info(f"📦 File Size: {file_size_mb:.2f} MB")
 
-    # STEP 3
-    status.update(label="🧠 Embeddings", state="running")
-    embedded_chunks = embed_chunks(chunks)
-    progress.progress(75)
+            if file_size_mb > MAX_PDF_SIZE_MB:
+                st.error("❌ File too large")
+            else:
 
-    # STEP 4
-    status.update(label="💾 Saving", state="running")
+                status = st.empty()
+                progress = st.progress(0)
 
-    pdf_id = store_pdf_metadata(
-        filename=uploaded_file.name,
-        file_size=uploaded_file.size,
-        page_count=len(pages),
-        device_id=st.session_state.device_id
-    )
+                status.info("📄 Reading PDF...")
+                pages = extract_text_from_pdf(uploaded_file)
+                progress.progress(30)
 
-    store_chunks(embedded_chunks, pdf_id, st.session_state.device_id)
+                status.info("✂️ Chunking...")
+                chunks = chunk_text(pages)
+                progress.progress(60)
 
-    st.session_state.pdf_id = pdf_id
+                status.info("🧠 Embedding...")
+                embedded = embed_chunks(chunks)
+                progress.progress(85)
 
-    progress.progress(100)
-    status.update(label="✅ Ready!", state="complete")
+                status.info("💾 Saving...")
+
+                pdf_id = store_pdf_metadata(
+                    uploaded_file.name,
+                    uploaded_file.size,
+                    len(pages),
+                    st.session_state.device_id
+                )
+
+                store_chunks(embedded, pdf_id, st.session_state.device_id)
+
+                chat_data["pdf_id"] = pdf_id
+                st.session_state.last_pdf_id = pdf_id
+
+                progress.progress(100)
+                status.success("✅ PDF Ready!")
+
+    else:
+        if st.session_state.last_pdf_id:
+            chat_data["pdf_id"] = st.session_state.last_pdf_id
+            st.success("📄 Using last PDF")
+        else:
+            st.warning("⚠️ No previous PDF found")
 
 
 # -------------------------
-# BLOCK IF NO PDF
+# CHAT UI (CENTER LIKE)
 # -------------------------
-if not st.session_state.pdf_id:
-    st.warning("📌 Please upload a PDF first to start chatting")
-    st.stop()
+st.subheader("💬 Chat")
 
-
-# -------------------------
-# CHAT AREA (WhatsApp / ChatGPT STYLE)
-# -------------------------
-chat_id = st.session_state.current_chat
-messages = st.session_state.chats[chat_id]
-
-
-# SHOW MESSAGES (center like ChatGPT)
 for msg in messages:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
 
-
-# INPUT BOX
-user_input = st.chat_input("Ask something about your document...")
+# -------------------------
+# INPUT BOX (ALWAYS FIXED)
+# -------------------------
+user_input = st.chat_input("Ask something about your PDF...")
 
 if user_input:
 
@@ -158,18 +182,23 @@ if user_input:
     with st.chat_message("user"):
         st.write(user_input)
 
-    # AI RESPONSE
+    # -------------------------
+    # RAG ANSWER
+    # -------------------------
+    if not chat_data["pdf_id"]:
+        answer = "⚠️ Please upload a PDF first for this chat."
+    else:
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                answer = ask_question(
+                    user_input,
+                    chat_data["pdf_id"],
+                    st.session_state.device_id,
+                    chat_id
+                )
+
+    # SHOW ANSWER
     with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
+        st.write(answer)
 
-            answer = ask_question(
-                user_input,
-                st.session_state.pdf_id,
-                st.session_state.device_id,
-                chat_id
-            )
-
-            st.write(answer)
-
-    # SAVE AI MESSAGE
     messages.append({"role": "assistant", "content": answer})
